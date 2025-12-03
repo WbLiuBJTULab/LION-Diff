@@ -93,6 +93,7 @@ MODEL:
             LATENT:
                 voxel_feature_dim: 64
                 voxel_latent_dim: 16
+                latent_down_scale: [4, 4, 4]
             DIFF_PROCESS:
                 diff_noise_scale: 1.0
                 diff_residual_scale: 1.0
@@ -100,7 +101,7 @@ MODEL:
                 model:
                     in_channels: 16
                     out_channels: 16
-                    base_channels: 32
+                    base_channels: 8
                     dropout: 0.1
                     mlp_dims: [256, 128, 64]
                     # 新增位置引导配置

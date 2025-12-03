@@ -5,42 +5,106 @@
 
 import torch
 import torch.nn as nn
+import torch_scatter
 import math
 import numpy as np
 
 from .radar_cond_diff_denoise import Cond_Diff_Denoise
 
 
+# 在 prepare_diffusion.py 中添加新的匹配算法
+
+class CoordinateMatcher:
+    """高效坐标匹配器"""
+
+    @staticmethod
+    def hash_based_match(voxel_coords, reference_coords, spatial_shape, device):
+        """
+        基于哈希的快速坐标匹配
+        """
+        d, h, w = spatial_shape
+
+        # 创建哈希函数
+        def create_hash(coords):
+            # 使用更高效的哈希函数
+            return (coords[:, 0] * (d * h * w) +
+                    coords[:, 1] * (h * w) +
+                    coords[:, 2] * w +
+                    coords[:, 3])
+
+        # 创建参考坐标的哈希集合
+        ref_hashes = create_hash(reference_coords)
+        ref_hash_set = set(ref_hashes.cpu().numpy())
+
+        # 分批处理体素坐标（避免内存爆炸）
+        batch_size = 100000  # 根据GPU内存调整
+        matched_mask = torch.zeros(len(voxel_coords), dtype=torch.bool, device=device)
+
+        for i in range(0, len(voxel_coords), batch_size):
+            end_idx = min(i + batch_size, len(voxel_coords))
+            batch_coords = voxel_coords[i:end_idx]
+
+            # 计算批次哈希
+            batch_hashes = create_hash(batch_coords)
+            batch_hashes_cpu = batch_hashes.cpu().numpy()
+
+            # 使用集合操作进行快速匹配
+            batch_mask = np.array([hash_val in ref_hash_set for hash_val in batch_hashes_cpu])
+            matched_mask[i:end_idx] = torch.tensor(batch_mask, device=device)
+
+        return matched_mask
+
+    @staticmethod
+    def gpu_accelerated_match(voxel_coords, reference_coords, spatial_shape, device):
+        """
+        GPU加速的坐标匹配（最推荐）
+        """
+        d, h, w = spatial_shape
+        hw = h * w
+        dhw = d * hw
+
+        # 线性化坐标
+        def linearize(coords):
+            return (coords[:, 0] * dhw +
+                    coords[:, 1] * hw +
+                    coords[:, 2] * w +
+                    coords[:, 3])
+
+        ref_linear = linearize(reference_coords)
+        voxel_linear = linearize(voxel_coords)
+
+        # 使用torch.unique和torch.isin进行GPU加速匹配
+        unique_ref = torch.unique(ref_linear)
+        matched_mask = torch.isin(voxel_linear, unique_ref)
+
+        return matched_mask
+
 class DiffusionCoordinateProcessor:
     """
     处理扩散模型相关的坐标操作
-    包括坐标下采样、坐标扩散生成、坐标验证等
     """
 
     @staticmethod
     def downsample_coords(coords, down_scale, spatial_shape):
         """
         下采样坐标张量
-        参数:
-            coords: 坐标张量 [N, 4] (batch_idx, z, y, x)
-            down_scale: 下采样比例 [scale_x, scale_y, scale_z]
-            spatial_shape: 空间形状 (D, H, W)
-        返回:
-            下采样后的坐标张量
         """
         if coords is None or len(coords) == 0:
             return None
 
+        # 使用向量化操作
         downsampled_coords = coords.clone().float()
-        downsampled_coords[:, 3] = torch.floor(downsampled_coords[:, 3] / down_scale[0])  # X
-        downsampled_coords[:, 2] = torch.floor(downsampled_coords[:, 2] / down_scale[1])  # Y
-        downsampled_coords[:, 1] = torch.floor(downsampled_coords[:, 1] / down_scale[2])  # Z
 
-        # 裁剪到有效范围
+        # 批量除法运算
+        downsampled_coords[:, 3] = torch.floor(coords[:, 3] / down_scale[0])  # X
+        downsampled_coords[:, 2] = torch.floor(coords[:, 2] / down_scale[1])  # Y
+        downsampled_coords[:, 1] = torch.floor(coords[:, 1] / down_scale[2])  # Z
+
+        # 使用clamp确保坐标在有效范围内
         d, h, w = spatial_shape
-        downsampled_coords[:, 3] = downsampled_coords[:, 3].clamp(0, w - 1)
-        downsampled_coords[:, 2] = downsampled_coords[:, 2].clamp(0, h - 1)
-        downsampled_coords[:, 1] = downsampled_coords[:, 1].clamp(0, d - 1)
+        downsampled_coords[:, 3].clamp_(0, w - 1)
+        downsampled_coords[:, 2].clamp_(0, h - 1)
+        downsampled_coords[:, 1].clamp_(0, d - 1)
 
         return downsampled_coords.long()
 
@@ -124,136 +188,185 @@ class DiffusionFeatureExtractor:
 
     @staticmethod
     def extract_gt_reference_features(bs_voxel_coords, bs_voxel_features, reference_coords,
-                                      spatial_shape, device, debug_prefix=False):
+                                            spatial_shape, device, debug_prefix=False):
         """
-        提取真值框参考地图范围内的体素特征，并返回蒙版信息。
-        参数:
-            x: 稀疏张量 (spconv.SparseConvTensor)
-            reference_coords: 参考坐标 [N, 4]
-            return_full_mask: 是否返回完整的蒙版信息（包括冗余输出）
-        返回:
-            masked_features: 蒙版体素特征地图（真值框内的特征）
-            masked_coords: 蒙版体素地图坐标（真值框内的坐标）
-            gt_features: 真值框体素特征地图（与 masked_features 相同）
-            gt_coords: 真值框体素地图坐标（与 masked_coords 相同）
-            注意：masked_* 和 gt_* 是相同的，返回四元组以兼容需求。
+        批量化优化版：使用向量化操作处理整个batch
         """
-        # 输入验证
         if reference_coords is None or len(reference_coords) == 0:
-            if debug_prefix:
-                print(f"[DEBUG] 扩散条件准备: 参考坐标为空，跳过特征提取")
-            return None, None, None, None  # 返回四个None
-
+            return None, None, None, None, None
 
         # 设备一致性处理
+        bs_voxel_coords = bs_voxel_coords.to(device)
+        bs_voxel_features = bs_voxel_features.to(device)
         reference_coords = reference_coords.to(device)
 
-        # 获取空间维度信息
         d, h, w = spatial_shape
+        hw = h * w
+        dhw = d * hw
 
-        # 创建坐标线性化映射函数
-        def linearize_coords(coords):
-            return (coords[:, 0] * (d * h * w) +
-                    coords[:, 1] * (h * w) +
+        # 批量化线性化函数
+        def batch_linearize(coords):
+            return (coords[:, 0] * dhw +
+                    coords[:, 1] * hw +
                     coords[:, 2] * w +
                     coords[:, 3])
 
-        # 线性化参考坐标
-        ref_linear = linearize_coords(reference_coords)
-        ref_set = set(ref_linear.cpu().numpy())
+        # 线性化所有坐标
+        ref_linear = batch_linearize(reference_coords)
+        voxel_linear = batch_linearize(bs_voxel_coords)
 
-        # 线性化当前体素坐标
-        x_linear = linearize_coords(bs_voxel_coords)
+        # 使用批量化匹配（优化关键点）
+        # 方法：使用torch.bucketize进行快速批匹配
+        sorted_ref, ref_indices = torch.sort(ref_linear)
 
-        # 创建匹配掩码
-        matched_mask = torch.tensor([key.item() in ref_set for key in x_linear],
-                            device=device, dtype=torch.bool)
+        # 使用bucketize进行快速匹配（比searchsorted更快）
+        bucket_indices = torch.bucketize(voxel_linear, sorted_ref)
+
+        # 防止索引越界
+        bucket_indices = torch.clamp(bucket_indices, 0, len(sorted_ref) - 1)
+
+        # 检查匹配
+        matched_mask = sorted_ref[bucket_indices] == voxel_linear
 
         # 提取匹配结果
         matched_features = bs_voxel_features[matched_mask]
         matched_coords = bs_voxel_coords[matched_mask]
 
+        # 创建蒙版地图（使用稀疏张量优化内存）
+        mask_features = torch.zeros_like(bs_voxel_features)
+        mask_coords = torch.zeros_like(bs_voxel_coords)
 
-        # 关键改进：创建蒙版体素特征地图
-        # 创建蒙版特征地图：真值框内为原特征，框外为零
-        mask_features = torch.zeros_like(bs_voxel_features)  # 初始化为零
-        mask_coords = torch.zeros_like(bs_voxel_coords)  # 初始化为零
-        mask_features[matched_mask] = bs_voxel_features[matched_mask]  # 真值框内填入实际特征
-        mask_coords[matched_mask] = bs_voxel_coords[matched_mask]  # 真值框内填入实际特征
-
-        # 创建蒙版标记
-        mask_indicator = matched_mask.clone()
+        mask_features[matched_mask] = bs_voxel_features[matched_mask]
+        mask_coords[matched_mask] = bs_voxel_coords[matched_mask]
 
         if debug_prefix:
-            print(f"[DEBUG] 扩散条件准备: 蒙版地图创建完成")
-            print(f"        - 真值框特征形状: {matched_features.shape}")
-            print(f"        - 真值框坐标形状: {matched_coords.shape}")
-            print(f"        - 蒙版特征形状: {mask_features.shape}")
-            print(f"        - 蒙版坐标形状: {mask_coords.shape}")
-            print(f"        - 蒙版标记形状: {mask_indicator.shape}")
-            print(f"        - 蒙版标记True数量: {mask_indicator.sum().item()}")
+            print(f"[DEBUG] 批量化蒙版地图创建完成")
+            print(f"        - 匹配体素数量: {matched_mask.sum().item()}")
+            print(f"        - 匹配率: {matched_mask.sum().item() / len(bs_voxel_features):.3f}")
 
-            # 验证提取准确性
-            DiffusionCoordinateProcessor.validate_coordinate_extraction(
-                matched_coords, reference_coords, spatial_shape)
-
-        return matched_features, matched_coords, mask_features, mask_coords, mask_indicator
+        return matched_features, matched_coords, mask_features, mask_coords, matched_mask
 
     @staticmethod
-    def prepare_diffusion_input(bs_voxel_features, bs_voxel_coords, reference_coords, spatial_shape, device):
+    def create_sparse_mask(features, coords, matched_mask, device):
         """
-        准备扩散模型的输入条件
-        参数:
-            x: 稀疏张量
-            fill_coords: 填充坐标
-            reference_coords: 参考坐标
-            diffusion_model_instance: 扩散模型实例
-        返回:
-            扩散条件字典
+        创建稀疏蒙版地图，避免全零张量的内存浪费
         """
-        diffusion_input = {}
+        # 只存储非零元素
+        non_zero_indices = torch.where(matched_mask)[0]
 
-        feature_dim = bs_voxel_features.shape[1] if len(bs_voxel_features) > 0 else 64
-        coord_dim = 4  # (batch_idx, z, y, x)
+        if len(non_zero_indices) == 0:
+            # 返回空的稀疏表示
+            return torch.zeros(0, features.shape[1], device=device), \
+                torch.zeros(0, 4, device=device, dtype=torch.long), \
+                matched_mask
 
-        # 提取真值框特征作为条件
-        if reference_coords is not None and len(reference_coords) > 0:
-            gt_reference_features, gt_reference_coords, mask_features, mask_coords, mask_indicator = (
-                DiffusionFeatureExtractor.extract_gt_reference_features(
-                bs_voxel_coords, bs_voxel_features, reference_coords, spatial_shape, device)
-            )
-            diffusion_input.update({
-                'bs_voxel_features': bs_voxel_features,
-                'bs_voxel_coords': bs_voxel_coords,
-                'gt_reference_features': gt_reference_features,
-                'gt_reference_coords': gt_reference_coords,
-                'gt_mask_features': mask_features,  # 蒙版特征地图
-                'gt_mask_coords': mask_coords,
-                'gt_mask_indicator': mask_indicator,  # 蒙版标记
-                'has_gt_reference': True
-            })
-        else:
-            # 处理空reference_coords的情况
-            empty_features = torch.empty(0, feature_dim, device=device)
-            empty_coords = torch.empty(0, coord_dim, device=device, dtype=torch.long)
-            zero_features = torch.zeros_like(bs_voxel_features)
-            zero_coords = torch.zeros_like(bs_voxel_coords)
+        sparse_features = features[non_zero_indices]
+        sparse_coords = coords[non_zero_indices]
+
+        return sparse_features, sparse_coords, matched_mask
+
+    @staticmethod
+    def prepare_diffusion_input(bs_voxel_features, bs_voxel_coords, reference_coords,
+                                spatial_shape, device, debug_prefix=False):
+        """
+        修复版：准备扩散模型的输入条件
+        保持蒙版地图全0模式，确保形状一致性
+        """
+        # 处理空reference_coords的情况
+        if reference_coords is None or len(reference_coords) == 0:
+            feature_dim = bs_voxel_features.shape[1] if len(bs_voxel_features) > 0 else 64
+
+            # 创建全0蒙版地图，保持形状一致性
+            gt_mask_features = torch.zeros_like(bs_voxel_features)
+            gt_mask_coords = torch.zeros_like(bs_voxel_coords)
             mask_indicator = torch.zeros(len(bs_voxel_features), dtype=torch.bool, device=device)
 
-            diffusion_input.update({
-                'bs_voxel_features': bs_voxel_features,
-                'bs_voxel_coords': bs_voxel_coords,
-                'gt_reference_features': empty_features,
-                'gt_reference_coords': empty_coords,
-                'gt_mask_features': zero_features,
-                'gt_mask_coords': zero_coords,
-                'gt_mask_indicator': mask_indicator,
-                'has_gt_reference': False
-            })
-            # print("[DEBUG] 扩散条件准备: reference_coords 为空，使用全零负样本")
+            # 返回空的匹配特征
+            empty_features = torch.empty(0, feature_dim, device=device)
+            empty_coords = torch.empty(0, 4, device=device, dtype=torch.long)
 
-        return diffusion_input
+            return empty_features, empty_coords, gt_mask_features, gt_mask_coords, mask_indicator
 
+        # 使用GPU加速匹配
+        matched_mask = CoordinateMatcher.gpu_accelerated_match(
+            bs_voxel_coords, reference_coords, spatial_shape, device)
+
+        # 提取匹配特征
+        matched_features = bs_voxel_features[matched_mask]
+        matched_coords = bs_voxel_coords[matched_mask]
+
+        # 修复：创建全0蒙版地图，确保形状一致性
+        gt_mask_features = torch.zeros_like(bs_voxel_features)
+        gt_mask_coords = torch.zeros_like(bs_voxel_coords)
+
+        # 只在匹配位置填充特征
+        gt_mask_features[matched_mask] = bs_voxel_features[matched_mask]
+        gt_mask_coords[matched_mask] = bs_voxel_coords[matched_mask]
+
+        if debug_prefix:
+            print(f"[DEBUG] 扩散条件准备: 蒙版地图创建完成（全0模式）")
+            print(f"        - 匹配体素数量: {matched_mask.sum().item()}/{len(bs_voxel_features)}")
+            print(f"        - 蒙版地图形状: {gt_mask_features.shape}")
+
+        return matched_features, matched_coords, gt_mask_features, gt_mask_coords, matched_mask
+
+
+class SimpleVoxelMerging(nn.Module):
+    """
+    简化版潜变量降采样模块
+    """
+
+    def __init__(self, down_scale=[2, 2, 2]):
+        super().__init__()
+        self.down_scale = down_scale
+
+    def forward(self, voxel_features, voxel_coords, spatial_shape):
+        """
+        参数:
+            voxel_features: 体素特征 [N, 64]
+            voxel_coords: 对应体素坐标 [N, 4]
+            spatial_shape: 原始空间形状 (D, H, W)
+        返回:
+            merged_voxel: 降采样后的体素 [M, 64]
+            merged_coords: 降采样后的坐标 [M, 4]
+            unq_inv: 索引映射 [N]
+            new_sparse_shape: 新的空间形状
+        """
+        # 坐标缩放
+        coords = voxel_coords.clone().float()
+        coords[:, 3] = torch.floor(coords[:, 3] / self.down_scale[0])  # X
+        coords[:, 2] = torch.floor(coords[:, 2] / self.down_scale[1])  # Y
+        coords[:, 1] = torch.floor(coords[:, 1] / self.down_scale[2])  # Z
+        coords = coords.long()
+
+        # 坐标线性化
+        d, h, w = spatial_shape
+        scale_xyz = (d // self.down_scale[2]) * (h // self.down_scale[1]) * (w // self.down_scale[0])
+        scale_yz = (d // self.down_scale[2]) * (h // self.down_scale[1])
+        scale_z = (d // self.down_scale[2])
+        merge_coords = coords[:, 0] * scale_xyz + coords[:, 3] * scale_yz + coords[:, 2] * scale_z + coords[:, 1]
+
+        # 计算新的空间形状
+        new_d = math.ceil(d / self.down_scale[2])
+        new_h = math.ceil(h / self.down_scale[1])
+        new_w = math.ceil(w / self.down_scale[0])
+        new_sparse_shape = [new_d, new_h, new_w]
+
+        # 特征聚合
+        unq_coords, unq_inv = torch.unique(merge_coords, return_inverse=True)
+        merged_voxel = torch_scatter.scatter_mean(voxel_features, unq_inv, dim=0)
+
+        # 生成降采样后的坐标
+        unq_coords = unq_coords.int()
+        merged_coords = torch.stack((
+            unq_coords // scale_xyz,
+            (unq_coords % scale_xyz) // scale_yz,
+            (unq_coords % scale_yz) // scale_z,
+            unq_coords % scale_z
+        ), dim=1)
+        merged_coords = merged_coords[:, [0, 3, 2, 1]]  # 调整顺序为 (batch_idx, z, y, x)
+
+        return merged_voxel, merged_coords, unq_inv, new_sparse_shape
 
 class VoxelLatentEncoder(nn.Module):
     """
@@ -274,7 +387,6 @@ class VoxelLatentEncoder(nn.Module):
         latent = self.voxel_to_latent_encoder(features)  # [N, latent_dim]
         return latent
 
-
 class VoxelLatentDecoder(nn.Module):
     """
     潜变量解码器：将扩散模型输出的潜变量解码回原始体素特征维度
@@ -291,7 +403,31 @@ class VoxelLatentDecoder(nn.Module):
         )
 
     def forward(self, latent):
-        return self.latent_to_voxel_decoder(latent)
+        features = self.latent_to_voxel_decoder(latent)
+        return features
+
+class SimpleVoxelExpanding(nn.Module):
+    """
+    简化版潜变量上采样模块
+    功能：利用索引映射将低分辨率潜变量复制到高分辨率位置
+    输入: lowres_latent [M, D], lowres_coords [M, 4], unq_inv [N] (来自降采样)
+    输出: 上采样后的潜变量 [N, D]
+    """
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, lower_voxel, lower_coords, unq_inv):
+        """
+        参数:
+            lowres_latent: 降采样后的潜变量 [M, D]
+            lowres_coords: 降采样后的坐标 [M, 4]（未直接使用，但保留以兼容）
+            unq_inv: 索引映射 [N]，来自降采样步骤
+        返回:
+            upsampled_latent: 上采样后的潜变量 [N, D]
+        """
+        # 直接通过索引映射复制特征：每个高分辨率位置获取对应低分辨率特征
+        upsampled_voxel = torch.gather(lower_voxel, 0, unq_inv.unsqueeze(1).repeat(1, lower_voxel.shape[1]))
+        return upsampled_voxel
 
 class DiffusionModelManager:
     """
@@ -301,15 +437,23 @@ class DiffusionModelManager:
 
     def __init__(self, diff_model):
 
-        self.latent_encoder_instance = VoxelLatentEncoder(
+        self.down_scale = diff_model.LATENT.latent_down_scale
+
+        self.voxel_downsampler = SimpleVoxelMerging(
+            down_scale=self.down_scale)
+
+        self.latent_encoder = VoxelLatentEncoder(
             input_dim=diff_model.LATENT.voxel_feature_dim,
             latent_dim=diff_model.LATENT.voxel_latent_dim
         )
 
         # 新增解码器
-        self.latent_decoder_instance = VoxelLatentDecoder(
+        self.latent_decoder = VoxelLatentDecoder(
             latent_dim=diff_model.LATENT.voxel_latent_dim,
             output_dim=diff_model.LATENT.voxel_feature_dim
+        )
+
+        self.voxel_upsampler = SimpleVoxelExpanding(
         )
 
         self.diffusion_model_instance = Cond_Diff_Denoise(
@@ -323,79 +467,123 @@ class DiffusionModelManager:
 
         self.debug_prefix = False
 
-    def _sync_device(self, input_tensor):
+    def _sync_device(self, target_device):
         """同步模型设备到输入张量所在的设备"""
         if not self._device_synced:
-            target_device = input_tensor.device
-            self.latent_encoder_instance = self.latent_encoder_instance.to(target_device)
-            self.latent_decoder_instance = self.latent_decoder_instance.to(target_device)  # 新增解码器同步
+            self.latent_encoder = self.latent_encoder.to(target_device)
+            self.latent_decoder = self.latent_decoder.to(target_device)  # 新增解码器同步
             self.diffusion_model_instance = self.diffusion_model_instance.to(target_device)
             self._device_synced = True
 
-    def apply_diffusion(self, diffusion_input, training=True):
+    def apply_diffusion(self, bs_voxel_features, bs_voxel_coords,
+                        reference_coords, spatial_shape, device, training=True):
         """
         应用扩散模型
         参数:
-            diffusion_input: 条件输入
-            target: 目标特征（用于训练）
+        x: 稀疏张量
+            fill_coords: 填充坐标
+            reference_coords: 参考坐标
+            diffusion_model_instance: 扩散模型实例
         返回:
             增强后的特征
         """
-        if 'bs_voxel_features' in diffusion_input:
-            self._sync_device(diffusion_input['bs_voxel_features'])
+        self._sync_device(device)
+
+        if self.debug_prefix:
+            print(f"[debug]apply_diffusion输入检查: {bs_voxel_features.shape}")
+            print(f"——体素地图形状: {bs_voxel_features.shape}")
+            print(f"——体素地图坐标形状: {bs_voxel_coords.shape}")
+            print(f"——真值框地图坐标形状: {reference_coords.shape}")
+
+        diffusion_input = {}
 
         if training:
-            # 训练模式
             if self.debug_prefix:
                 print(f"[DEBUG] 已进入扩散训练流程")
-                print(f"扩散输入设备: {diffusion_input['bs_voxel_features'].device}")
-                print(f"编码器设备: {next(self.latent_encoder_instance.parameters()).device}")
-                print(f"扩散模型设备: {next(self.diffusion_model_instance.parameters()).device}")
-                print(f"解码器设备: {next(self.latent_decoder_instance.parameters()).device}")
-
-            # _代码修改：同时对体素地图特征和真值框参考蒙版地图基于MLP提取latent
-            voxel_latent = self.latent_encoder_instance(diffusion_input['bs_voxel_features'])
-            gt_mask_latent = self.latent_encoder_instance(diffusion_input['gt_mask_features'])
-            diffusion_input.update({
-                'voxel_latent': voxel_latent,
-                'gt_mask_latent': gt_mask_latent
-            })
+            bs_voxel_down, bs_coords_down,  unq_inv, spatial_shape_down = self.voxel_downsampler(
+                voxel_features=bs_voxel_features,
+                voxel_coords=bs_voxel_coords,
+                spatial_shape=spatial_shape
+            )
 
             if self.debug_prefix:
-                print(f"潜变量形状: {diffusion_input['voxel_latent'].shape}")
+                print(f"体素地图下采样形状: {bs_voxel_down.shape}")
+                print(f"体素地图坐标下采样形状: {bs_coords_down.shape}")
+                print(f"体素空间下采样形状: {spatial_shape_down}")
+
+            reference_coords_down = DiffusionCoordinateProcessor.downsample_coords(
+                reference_coords, self.down_scale, spatial_shape_down
+            ) if reference_coords is not None else None
+
+            _, _, gt_mask_features_down, gt_mask_coords_down, _ = (
+                DiffusionFeatureExtractor.prepare_diffusion_input(
+                    bs_voxel_down,
+                    bs_coords_down,
+                    reference_coords_down,
+                    spatial_shape_down,
+                    device,
+                    debug_prefix=self.debug_prefix
+                ))
+
+            if self.debug_prefix:
+                print(f"蒙版地图下采样形状: {gt_mask_features_down.shape}")
+                print(f"蒙版地图坐标下采样形状: {gt_mask_coords_down.shape}")
+
+            bs_voxel_latent = self.latent_encoder(bs_voxel_down)
+            gt_mask_latent = self.latent_encoder(gt_mask_features_down)
+
+            if self.debug_prefix:
+                print(f"下采样后体素地图潜变量形状: {bs_voxel_latent.shape}")
+                print(f"下采样后蒙版地图潜变量形状: {gt_mask_latent.shape}")
+
+            diffusion_input.update({
+                'bs_voxel_latent': bs_voxel_latent,
+                'gt_mask_latent': gt_mask_latent,
+                'bs_voxel_coords': bs_coords_down,
+                'gt_mask_coords': gt_mask_coords_down
+            })
 
             enhanced_latent, diffusion_loss = self.diffusion_model_instance(diffusion_input)
 
             # enhanced_latent = voxel_latent - predicted_noise * self.diff_noise_scale
-            # enhanced_features = self.latent_decoder_instance(enhanced_latent)
-            enhanced_voxel = self.latent_decoder_instance(enhanced_latent)
+            # enhanced_features = self.latent_decoder(enhanced_latent)
+            enhanced_voxel_down = self.latent_decoder(enhanced_latent)
+            enhanced_voxel = self.voxel_upsampler(lower_voxel = enhanced_voxel_down,
+                                                  lower_coords = bs_coords_down, unq_inv = unq_inv)  # [N, D]
 
             return enhanced_voxel, diffusion_loss
 
         else:
-            # 推断模式
+            # 推断模式类似处理
             with torch.no_grad():
                 if self.debug_prefix:
-                    print(f"[DEBUG] 已进入扩散测试流程")
-                    print(f"扩散输入设备: {diffusion_input['bs_voxel_features'].device}")
-                    print(f"编码器设备: {next(self.latent_encoder_instance.parameters()).device}")
-                    print(f"扩散模型设备: {next(self.diffusion_model_instance.parameters()).device}")
+                    print(f"[DEBUG] 推断流程")
 
-                voxel_latent = self.latent_encoder_instance(diffusion_input['bs_voxel_features'])
-                gt_mask_latent = self.latent_encoder_instance(diffusion_input['gt_mask_features'])
+                # 使用与训练相同的下采样流程
+                bs_voxel_down, bs_coords_down, unq_inv, _ = self.voxel_downsampler(
+                    voxel_features=bs_voxel_features,
+                    voxel_coords=bs_voxel_coords,
+                    spatial_shape=spatial_shape
+                )
+
+                # 推断时没有真值框，创建零值蒙版
+                gt_mask_features_down = torch.zeros_like(bs_voxel_down)
+                gt_mask_coords_down = bs_coords_down.clone()
+
+                # 编码为latent
+                bs_voxel_latent = self.latent_encoder(bs_voxel_down)
+                gt_mask_latent = self.latent_encoder(gt_mask_features_down)
+
                 diffusion_input.update({
-                    'voxel_latent': voxel_latent,
-                    'gt_mask_latent': gt_mask_latent
+                    'bs_voxel_latent': bs_voxel_latent,
+                    'gt_mask_latent': gt_mask_latent,
+                    'bs_voxel_coords': bs_coords_down,
+                    'gt_mask_coords': gt_mask_coords_down
                 })
 
-                if self.debug_prefix:
-                    print(f"潜变量形状: {diffusion_input['voxel_latent'].shape}")
-
-                #enhanced_features = diffusion_input['voxel_features']
                 enhanced_latent, _ = self.diffusion_model_instance(diffusion_input)
-
-                # enhanced_latent = voxel_latent - predicted_noise * self.diff_noise_scale
-                # enhanced_features = self.latent_decoder_instance(enhanced_latent)
-                enhanced_voxel = self.latent_decoder_instance(enhanced_latent)
+                enhanced_voxel_down = self.latent_decoder(enhanced_latent)
+                enhanced_voxel = self.voxel_upsampler(lower_voxel=enhanced_voxel_down,
+                                                      lower_coords=bs_coords_down, unq_inv=unq_inv)  # [N, D]
 
             return enhanced_voxel, 0.0

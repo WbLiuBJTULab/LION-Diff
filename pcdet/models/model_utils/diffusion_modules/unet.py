@@ -15,17 +15,17 @@ class DiffusionUNet(nn.Module):
         # 现有参数
         self.in_channels = config.in_channels * 2  # 32
         self.out_channels = config.out_channels  # 16
-        self.base_channels = config.base_channels  # 32
+        self.base_channels = config.base_channels  # 8
         self.dropout = config.dropout
         self.use_pos_guide = config.use_pos_guide
         self.pos_embed_dim = config.pos_embed_dim
-        self.temb_ch = self.base_channels * 4  # 128
+        self.temb_channels = self.base_channels * 4  # 32
 
         # 时间步嵌入网络（保持不变）
         self.temb_net = nn.Sequential(
-            nn.Linear(self.base_channels, self.temb_ch),
+            nn.Linear(self.base_channels, self.temb_channels),
             nn.SiLU(),
-            nn.Linear(self.temb_ch, self.temb_ch)
+            nn.Linear(self.temb_channels, self.temb_channels)
         )
 
         # 简化位置引导：坐标编码器和投影层
@@ -35,8 +35,8 @@ class DiffusionUNet(nn.Module):
                 nn.ReLU(),
                 nn.Linear(self.pos_embed_dim, self.pos_embed_dim)
             )
-            # 投影层：将坐标编码映射到特征维度（160 = 32 + 128）
-            self.pos_proj = nn.Linear(self.pos_embed_dim, self.in_channels + self.temb_ch)
+            # 投影层：将坐标编码映射到特征维度（64 = 32 + 32）
+            self.pos_proj = nn.Linear(self.pos_embed_dim, self.in_channels + self.temb_channels)
         else:
             self.pos_encoder = None
             self.pos_proj = None
@@ -48,7 +48,7 @@ class DiffusionUNet(nn.Module):
             mlp_dims = [256, 128, 64]  # 默认值
 
         layers = []
-        input_dim = self.in_channels + self.temb_ch  # 当前为 32+128=160
+        input_dim = self.in_channels + self.temb_channels  # 当前为 16+8=24
         for dim in mlp_dims:
             layers.append(nn.Sequential(
                 nn.Linear(input_dim, dim),

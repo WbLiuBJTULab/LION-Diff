@@ -270,10 +270,7 @@ class Cond_Diff_Denoise(nn.Module):
 
         if self.training:
             gt_mask_latent = data_dict['gt_mask_latent']
-            voxel_latent = data_dict['voxel_latent']
-
-            bs_voxel_coords = data_dict['bs_voxel_coords']
-            gt_mask_coords = data_dict['gt_mask_coords']
+            bs_voxel_latent = data_dict['bs_voxel_latent']
 
             total_loss = 0
             step_count = 0
@@ -281,15 +278,15 @@ class Cond_Diff_Denoise(nn.Module):
             # 组合坐标信息：使用蒙版坐标和原始坐标
             if self.use_pos_guide:
                 # 关键修改：直接拼接，保持[N,4]形状
-                coords_condition = gt_mask_coords
+                coords_condition = data_dict['gt_mask_coords']
             else:
                 coords_condition = None
 
             if self.debug_prefix:
                 print(f"Cond_Diff_Denoise相关输入-gt_mask_latent", gt_mask_latent.shape)
-                print(f"Cond_Diff_Denoise相关输入-voxel_latent", voxel_latent.shape)
+                print(f"Cond_Diff_Denoise相关输入-bs_voxel_latent", bs_voxel_latent.shape)
 
-            x = voxel_latent
+            x = bs_voxel_latent
             x_start = gt_mask_latent
 
             if self.debug_prefix:
@@ -304,7 +301,7 @@ class Cond_Diff_Denoise(nn.Module):
                 print(f"    -扩散模型流程：t", t.shape)
                 print(f"    -扩散模型流程：noise", noise.shape)
 
-            _x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)  # 是针对引导用的4D radar数据进行加噪
+            _x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
             noisy_masks = _x_noisy  # 此处出了训练用的噪声真值
 
             # 修改训练循环，收集每一步的预测噪声
@@ -334,14 +331,17 @@ class Cond_Diff_Denoise(nn.Module):
             return enhanced_features, loss
 
         else:
-            voxel_latent = data_dict['voxel_latent']
-            bs_voxel_coords = data_dict['bs_voxel_coords']
+            bs_voxel_latent = data_dict['bs_voxel_latent']
 
-            # 推断模式使用原始坐标
-            coords_condition = bs_voxel_coords if self.use_pos_guide else None
+            # 组合坐标信息：使用蒙版坐标和原始坐标
+            if self.use_pos_guide:
+                # 关键修改：直接拼接，保持[N,4]形状
+                coords_condition = data_dict['bs_voxel_coords']
+            else:
+                coords_condition = None
 
             t1 = time.time()
-            x = voxel_latent  # 条件特征 [N, 16]
+            x = bs_voxel_latent  # 条件特征 [N, 16]
             # 初始化noisy_masks为随机噪声，形状与voxel_latent相同
             noisy_masks = torch.randn_like(x)  # 标准扩散模型初始化
             t2 = time.time()

@@ -373,56 +373,22 @@ class PatchMerging3D(nn.Module):
         """
         # 检查扩散模型是否可用
         if not (self.diff_model_enable and self.DiffusionModelManager is not None):
-            # 如果未启用，返回原始数据和零损失
-            return x, x.features.clone(), x.indices.clone(), torch.tensor(0.0, device=x.indices.device)
+            return x.features.clone(), x.indices.clone(), torch.tensor(0.0, device=x.indices.device)
 
-        batch_size = x.indices[:, 0].max() + 1
         device = x.indices.device
-        enhanced_features_full = torch.zeros_like(x.features)
+        spatial_shape = x.spatial_shape
 
-        diffusion_losses = 0.0
-        diffusion_count = 0
+        # 修改：直接处理整个batch
+        bs_voxel_features = x.features
+        bs_voxel_coords = x.indices
 
-        # 批量处理每个样本
-        for i in range(batch_size):
-            # 创建当前样本的掩码
-            bs_mask = x.indices[:, 0] == i
+        enhanced_voxel, diffusion_loss = self.DiffusionModelManager.apply_diffusion(
+            bs_voxel_features, bs_voxel_coords, reference_coords,
+            spatial_shape, device, training=training
+        )
 
-            # 提取当前样本的特征和坐标
-            bs_voxel_features = x.features[bs_mask]
-            bs_voxel_coords = x.indices[bs_mask]
-            spatial_shape = x.spatial_shape
 
-            # 准备扩散模型输入
-            diffusion_input = DiffusionFeatureExtractor.prepare_diffusion_input(
-                bs_voxel_features, bs_voxel_coords, reference_coords, spatial_shape, device
-            )
-
-            # 应用扩散模型
-            predicted_noise_mask_voxel, diffusion_loss = self.DiffusionModelManager.apply_diffusion(
-                diffusion_input, training=training
-            )
-
-            # 特征增强：原始特征 + 预测的噪声掩码
-            enhanced_features_single = bs_voxel_features + predicted_noise_mask_voxel
-
-            # 累加损失
-            diffusion_losses += diffusion_loss
-            diffusion_count += 1
-
-            # 将增强后的特征填充回完整特征张量
-            enhanced_features_full[bs_mask] = enhanced_features_single
-
-        # 计算平均损失
-        diffusion_loss_avg = diffusion_losses / diffusion_count if diffusion_count > 0 else torch.tensor(0.0,
-                                                                                                         device=device)
-
-        # 更新稀疏张量的特征
-        #enhanced_x = x.replace_feature(enhanced_features_full)
-        final_diffusion_feats = enhanced_features_full.clone()
-        coords = x.indices.clone()
-
-        return final_diffusion_feats, coords, diffusion_loss_avg
+        return enhanced_voxel, x.indices.clone(), diffusion_loss
 
     def _apply_diffusion_model_first(self, x, reference_coords, coords_shift, diffusion_scale):
         """
@@ -946,7 +912,6 @@ class LION3DBackboneOneStride(nn.Module):
             # _debug 注释内容
             # 打印配置信息用于调试
             print(f'扩散模型配置: {diff_model.DIFF_MODEL_CFG}')
-
         else:
             self.DiffusionModelManager = None
             print('### 扩散模型未启用 ###')

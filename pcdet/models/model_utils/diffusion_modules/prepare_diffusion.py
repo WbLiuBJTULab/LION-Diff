@@ -320,7 +320,7 @@ class SimpleVoxelMerging(nn.Module):
         super().__init__()
         self.down_scale = down_scale
 
-    def forward(self, voxel_features, voxel_coords, spatial_shape):
+    def forward(self, voxel_features, voxel_coords, spatial_shape, training=False):
         """
         参数:
             voxel_features: 体素特征 [N, 64]
@@ -354,7 +354,11 @@ class SimpleVoxelMerging(nn.Module):
 
         # 特征聚合
         unq_coords, unq_inv = torch.unique(merge_coords, return_inverse=True)
-        merged_voxel = torch_scatter.scatter_mean(voxel_features, unq_inv, dim=0)
+        merged_voxel_mean = torch_scatter.scatter_mean(voxel_features, unq_inv, dim=0)
+        if training:
+            merged_voxel_max, _ = torch_scatter.scatter_max(voxel_features, unq_inv, dim=0)
+        else:
+            merged_voxel_max = merged_voxel_mean
 
         # 生成降采样后的坐标
         unq_coords = unq_coords.int()
@@ -366,7 +370,7 @@ class SimpleVoxelMerging(nn.Module):
         ), dim=1)
         merged_coords = merged_coords[:, [0, 3, 2, 1]]  # 调整顺序为 (batch_idx, z, y, x)
 
-        return merged_voxel, merged_coords, unq_inv, new_sparse_shape
+        return merged_voxel_mean, merged_voxel_max, merged_coords, unq_inv, new_sparse_shape
 
 class VoxelLatentEncoder(nn.Module):
     """
@@ -500,14 +504,16 @@ class DiffusionModelManager:
         if training:
             if self.debug_prefix:
                 print(f"[DEBUG] 已进入扩散训练流程")
-            bs_voxel_down, bs_coords_down,  unq_inv, spatial_shape_down = self.voxel_downsampler(
+            bs_voxel_mean_down, bs_voxel_mean_max, bs_coords_down,  unq_inv, spatial_shape_down = self.voxel_downsampler(
                 voxel_features=bs_voxel_features,
                 voxel_coords=bs_voxel_coords,
-                spatial_shape=spatial_shape
+                spatial_shape=spatial_shape,
+                training = training
             )
 
             if self.debug_prefix:
-                print(f"体素地图下采样形状: {bs_voxel_down.shape}")
+                print(f"体素地图平均下采样形状: {bs_voxel_mean_down.shape}")
+                print(f"体素地图最大下采样形状: {bs_voxel_mean_max.shape}")
                 print(f"体素地图坐标下采样形状: {bs_coords_down.shape}")
                 print(f"体素空间下采样形状: {spatial_shape_down}")
 
@@ -517,7 +523,7 @@ class DiffusionModelManager:
 
             _, _, gt_mask_features_down, gt_mask_coords_down, _ = (
                 DiffusionFeatureExtractor.prepare_diffusion_input(
-                    bs_voxel_down,
+                    bs_voxel_mean_max,
                     bs_coords_down,
                     reference_coords_down,
                     spatial_shape_down,
@@ -529,7 +535,7 @@ class DiffusionModelManager:
                 print(f"蒙版地图下采样形状: {gt_mask_features_down.shape}")
                 print(f"蒙版地图坐标下采样形状: {gt_mask_coords_down.shape}")
 
-            bs_voxel_latent = self.latent_encoder(bs_voxel_down)
+            bs_voxel_latent = self.latent_encoder(bs_voxel_mean_down)
             gt_mask_latent = self.latent_encoder(gt_mask_features_down)
 
             if self.debug_prefix:
@@ -560,18 +566,19 @@ class DiffusionModelManager:
                     print(f"[DEBUG] 推断流程")
 
                 # 使用与训练相同的下采样流程
-                bs_voxel_down, bs_coords_down, unq_inv, _ = self.voxel_downsampler(
+                bs_voxel_mean_down, _, bs_coords_down, unq_inv, _ = self.voxel_downsampler(
                     voxel_features=bs_voxel_features,
                     voxel_coords=bs_voxel_coords,
-                    spatial_shape=spatial_shape
+                    spatial_shape=spatial_shape,
+                    training = False
                 )
 
                 # 推断时没有真值框，创建零值蒙版
-                gt_mask_features_down = torch.zeros_like(bs_voxel_down)
+                gt_mask_features_down = torch.zeros_like(bs_voxel_mean_down)
                 gt_mask_coords_down = bs_coords_down.clone()
 
                 # 编码为latent
-                bs_voxel_latent = self.latent_encoder(bs_voxel_down)
+                bs_voxel_latent = self.latent_encoder(bs_voxel_mean_down)
                 gt_mask_latent = self.latent_encoder(gt_mask_features_down)
 
                 diffusion_input.update({

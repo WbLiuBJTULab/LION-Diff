@@ -76,7 +76,7 @@ MODEL:
         GROUP_SIZE: [4096, 2048, 1024, 512] 
         DIRECTION: ['x', 'y']
         DIFF_SCALE: 0.2
-        DIFFUSION:  [True, True, True, True] #False #True #针对不同层手是否启用动扩散处理
+        DIFFUSION:  [False, True, True, True] #False #True #针对不同层手是否启用动扩散处理
         SHIFT: True
         OPERATOR:
             NAME: 'Mamba'

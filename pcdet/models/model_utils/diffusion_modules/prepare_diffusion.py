@@ -316,11 +316,11 @@ class SimpleVoxelMerging(nn.Module):
     简化版潜变量降采样模块
     """
 
-    def __init__(self, down_scale=[2, 2, 2]):
+    def __init__(self, down_scale=[[2, 2, 16], [2, 2, 8], [2, 2, 4], [2, 2, 2]]):
         super().__init__()
-        self.down_scale = down_scale
+        self.all_down_scale = down_scale
 
-    def forward(self, voxel_features, voxel_coords, spatial_shape, training=False):
+    def forward(self, voxel_features, voxel_coords, spatial_shape, lionblock_idx=0, training=False):
         """
         参数:
             voxel_features: 体素特征 [N, 64]
@@ -332,24 +332,25 @@ class SimpleVoxelMerging(nn.Module):
             unq_inv: 索引映射 [N]
             new_sparse_shape: 新的空间形状
         """
+        current_down_scale = self.all_down_scale[lionblock_idx]
         # 坐标缩放
         coords = voxel_coords.clone().float()
-        coords[:, 3] = torch.floor(coords[:, 3] / self.down_scale[0])  # X
-        coords[:, 2] = torch.floor(coords[:, 2] / self.down_scale[1])  # Y
-        coords[:, 1] = torch.floor(coords[:, 1] / self.down_scale[2])  # Z
+        coords[:, 3] = torch.floor(coords[:, 3] / current_down_scale[0])  # X
+        coords[:, 2] = torch.floor(coords[:, 2] / current_down_scale[1])  # Y
+        coords[:, 1] = torch.floor(coords[:, 1] / current_down_scale[2])  # Z
         coords = coords.long()
 
         # 坐标线性化
         d, h, w = spatial_shape
-        scale_xyz = (d // self.down_scale[2]) * (h // self.down_scale[1]) * (w // self.down_scale[0])
-        scale_yz = (d // self.down_scale[2]) * (h // self.down_scale[1])
-        scale_z = (d // self.down_scale[2])
+        scale_xyz = (d // current_down_scale[2]) * (h // current_down_scale[1]) * (w // current_down_scale[0])
+        scale_yz = (d // current_down_scale[2]) * (h // current_down_scale[1])
+        scale_z = (d // current_down_scale[2])
         merge_coords = coords[:, 0] * scale_xyz + coords[:, 3] * scale_yz + coords[:, 2] * scale_z + coords[:, 1]
 
         # 计算新的空间形状
-        new_d = math.ceil(d / self.down_scale[2])
-        new_h = math.ceil(h / self.down_scale[1])
-        new_w = math.ceil(w / self.down_scale[0])
+        new_d = math.ceil(d / current_down_scale[2])
+        new_h = math.ceil(h / current_down_scale[1])
+        new_w = math.ceil(w / current_down_scale[0])
         new_sparse_shape = [new_d, new_h, new_w]
 
         # 特征聚合
@@ -441,10 +442,10 @@ class DiffusionModelManager:
 
     def __init__(self, diff_model):
 
-        self.down_scale = diff_model.LATENT.latent_down_scale
+        self.all_down_scale = diff_model.LATENT.latent_down_scale
 
         self.voxel_downsampler = SimpleVoxelMerging(
-            down_scale=self.down_scale)
+            down_scale=self.all_down_scale)
 
         self.latent_encoder = VoxelLatentEncoder(
             input_dim=diff_model.LATENT.voxel_feature_dim,
@@ -480,7 +481,7 @@ class DiffusionModelManager:
             self._device_synced = True
 
     def apply_diffusion(self, bs_voxel_features, bs_voxel_coords,
-                        reference_coords, spatial_shape, device, training=True):
+                        reference_coords, spatial_shape, device, lionblock_idx, training=True):
         """
         应用扩散模型
         参数:
@@ -508,7 +509,8 @@ class DiffusionModelManager:
                 voxel_features=bs_voxel_features,
                 voxel_coords=bs_voxel_coords,
                 spatial_shape=spatial_shape,
-                training = training
+                lionblock_idx=lionblock_idx,
+                training=training
             )
 
             if self.debug_prefix:
@@ -518,7 +520,7 @@ class DiffusionModelManager:
                 print(f"体素空间下采样形状: {spatial_shape_down}")
 
             reference_coords_down = DiffusionCoordinateProcessor.downsample_coords(
-                reference_coords, self.down_scale, spatial_shape_down
+                reference_coords, self.all_down_scale[lionblock_idx], spatial_shape_down
             ) if reference_coords is not None else None
 
             _, _, gt_mask_features_down, gt_mask_coords_down, _ = (
@@ -570,6 +572,7 @@ class DiffusionModelManager:
                     voxel_features=bs_voxel_features,
                     voxel_coords=bs_voxel_coords,
                     spatial_shape=spatial_shape,
+                    lionblock_idx=lionblock_idx,
                     training = False
                 )
 

@@ -243,7 +243,8 @@ class PatchMerging3D(nn.Module):
             输出: 下采样后的稀疏张量, 映射索引
         """
     def __init__(self, dim, out_dim=-1, down_scale=[2, 2, 2], norm_layer=nn.LayerNorm,
-                manual_diffusion=False, diff_scale=0.2, diff_model_enable=False, diff_model_priority=True, DiffusionModelManager=None):
+                 manual_diffusion=False, diff_scale=0.2, diff_model_enable=False, diff_model_priority=True,
+                 DiffusionModelManager=None, lionblock_idx=0):
         super().__init__()
         self.dim = dim
 
@@ -268,6 +269,7 @@ class PatchMerging3D(nn.Module):
         self.diff_model_enable = diff_model_enable  # 扩散模型开关
         self.diff_model_priority = diff_model_priority
         self.DiffusionModelManager = DiffusionModelManager # 存储扩散模型实例
+        self.lionblock_idx = lionblock_idx
 
         self.num_points = 6  # 3
 
@@ -384,7 +386,7 @@ class PatchMerging3D(nn.Module):
 
         enhanced_voxel, diffusion_loss = self.DiffusionModelManager.apply_diffusion(
             bs_voxel_features, bs_voxel_coords, reference_coords,
-            spatial_shape, device, training=training
+            spatial_shape, device, self.lionblock_idx, training=training
         )
 
 
@@ -947,7 +949,9 @@ class LION3DBackboneOneStride(nn.Module):
                                    norm_layer=norm_fn, manual_diffusion=manual_diffusion[0], diff_scale=diff_scale,
                                    diff_model_enable=diff_model.LEVEL[0],
                                    diff_model_priority= diff_model.PRIORITY[0],
-                                   DiffusionModelManager = self.DiffusionModelManager)
+                                   DiffusionModelManager = self.DiffusionModelManager,
+                                   lionblock_idx = 0
+                                   )
 
         # [944, 944, 16] -> [472, 472, 8]
         self.linear_2 = LIONBlock(self.layer_dim[1], depths[1], layer_down_scales[1], self.window_shape[1],
@@ -958,7 +962,9 @@ class LION3DBackboneOneStride(nn.Module):
                                    norm_layer=norm_fn, manual_diffusion=manual_diffusion[1], diff_scale=diff_scale,
                                    diff_model_enable=diff_model.LEVEL[1],
                                    diff_model_priority=diff_model.PRIORITY[1],
-                                   DiffusionModelManager = self.DiffusionModelManager)
+                                   DiffusionModelManager = self.DiffusionModelManager,
+                                   lionblock_idx = 1
+                                   )
 
         #  [236, 236, 8] -> [236, 236, 4]
         self.linear_3 = LIONBlock(self.layer_dim[2], depths[2], layer_down_scales[2], self.window_shape[2],
@@ -969,7 +975,9 @@ class LION3DBackboneOneStride(nn.Module):
                                    norm_layer=norm_fn, manual_diffusion=manual_diffusion[2], diff_scale=diff_scale,
                                    diff_model_enable=diff_model.LEVEL[2],
                                    diff_model_priority=diff_model.PRIORITY[2],
-                                   DiffusionModelManager = self.DiffusionModelManager)
+                                   DiffusionModelManager = self.DiffusionModelManager,
+                                   lionblock_idx = 2
+                                   )
 
         #  [236, 236, 4] -> [236, 236, 2]
         self.linear_4 = LIONBlock(self.layer_dim[3], depths[3], layer_down_scales[3], self.window_shape[3],
@@ -980,7 +988,9 @@ class LION3DBackboneOneStride(nn.Module):
                                    norm_layer=norm_fn, manual_diffusion=manual_diffusion[3], diff_scale=diff_scale,
                                    diff_model_enable=diff_model.LEVEL[3],
                                    diff_model_priority=diff_model.PRIORITY[3],
-                                   DiffusionModelManager = self.DiffusionModelManager)
+                                   DiffusionModelManager = self.DiffusionModelManager,
+                                   lionblock_idx = 3
+                                   )
 
         self.linear_out = LIONLayer(self.layer_dim[3], 1, [13, 13, 2], 256, direction=['x', 'y'], shift=shift,
                                     operator=self.linear_operator, layer_id=32, n_layer=self.n_layer)

@@ -421,7 +421,7 @@ class SimpleVoxelExpanding(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, lower_voxel, lower_coords, unq_inv):
+    def forward(self, lower_voxel, unq_inv):
         """
         参数:
             lowres_latent: 降采样后的潜变量 [M, D]
@@ -504,6 +504,7 @@ class DiffusionModelManager:
         if training:
             if self.debug_prefix:
                 print(f"[DEBUG] 已进入扩散训练流程")
+
             bs_voxel_mean_down, bs_voxel_mean_max, bs_coords_down,  unq_inv, spatial_shape_down = self.voxel_downsampler(
                 voxel_features=bs_voxel_features,
                 voxel_coords=bs_voxel_coords,
@@ -555,8 +556,7 @@ class DiffusionModelManager:
             # enhanced_latent = voxel_latent - predicted_noise * self.diff_noise_scale
             # enhanced_features = self.latent_decoder(enhanced_latent)
             enhanced_voxel_down = self.latent_decoder(enhanced_latent)
-            enhanced_voxel = self.voxel_upsampler(lower_voxel = enhanced_voxel_down,
-                                                  lower_coords = bs_coords_down, unq_inv = unq_inv)  # [N, D]
+            enhanced_voxel = self.voxel_upsampler(lower_voxel = enhanced_voxel_down, unq_inv = unq_inv)  # [N, D]
 
             return enhanced_voxel, diffusion_loss
 
@@ -571,7 +571,7 @@ class DiffusionModelManager:
                     voxel_features=bs_voxel_features,
                     voxel_coords=bs_voxel_coords,
                     spatial_shape=spatial_shape,
-                    lionblock_idx=lionblock_idx,
+                    down_scale=self.all_down_scale[lionblock_idx],
                     training = False
                 )
 
@@ -592,7 +592,6 @@ class DiffusionModelManager:
 
                 enhanced_latent, _ = self.diffusion_model_instance(diffusion_input)
                 enhanced_voxel_down = self.latent_decoder(enhanced_latent)
-                enhanced_voxel = self.voxel_upsampler(lower_voxel=enhanced_voxel_down,
-                                                      lower_coords=bs_coords_down, unq_inv=unq_inv)  # [N, D]
+                enhanced_voxel = self.voxel_upsampler(lower_voxel=enhanced_voxel_down, unq_inv=unq_inv)  # [N, D]
 
             return enhanced_voxel, 0.0

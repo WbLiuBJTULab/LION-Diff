@@ -316,11 +316,12 @@ class SimpleVoxelMerging(nn.Module):
     简化版潜变量降采样模块
     """
 
-    def __init__(self, down_scale=[[2, 2, 16], [2, 2, 8], [2, 2, 4], [2, 2, 2]]):
+    def __init__(self):
         super().__init__()
-        self.all_down_scale = down_scale
 
-    def forward(self, voxel_features, voxel_coords, spatial_shape, lionblock_idx=0, training=False):
+    def forward(self, voxel_features, voxel_coords, spatial_shape,
+                down_scale=[2, 2, 2],
+                training=False):
         """
         参数:
             voxel_features: 体素特征 [N, 64]
@@ -332,25 +333,24 @@ class SimpleVoxelMerging(nn.Module):
             unq_inv: 索引映射 [N]
             new_sparse_shape: 新的空间形状
         """
-        current_down_scale = self.all_down_scale[lionblock_idx]
         # 坐标缩放
         coords = voxel_coords.clone().float()
-        coords[:, 3] = torch.floor(coords[:, 3] / current_down_scale[0])  # X
-        coords[:, 2] = torch.floor(coords[:, 2] / current_down_scale[1])  # Y
-        coords[:, 1] = torch.floor(coords[:, 1] / current_down_scale[2])  # Z
+        coords[:, 3] = torch.floor(coords[:, 3] / down_scale[0])  # X
+        coords[:, 2] = torch.floor(coords[:, 2] / down_scale[1])  # Y
+        coords[:, 1] = torch.floor(coords[:, 1] / down_scale[2])  # Z
         coords = coords.long()
 
         # 坐标线性化
         d, h, w = spatial_shape
-        scale_xyz = (d // current_down_scale[2]) * (h // current_down_scale[1]) * (w // current_down_scale[0])
-        scale_yz = (d // current_down_scale[2]) * (h // current_down_scale[1])
-        scale_z = (d // current_down_scale[2])
+        scale_xyz = (d // down_scale[2]) * (h // down_scale[1]) * (w // down_scale[0])
+        scale_yz = (d // down_scale[2]) * (h // down_scale[1])
+        scale_z = (d // down_scale[2])
         merge_coords = coords[:, 0] * scale_xyz + coords[:, 3] * scale_yz + coords[:, 2] * scale_z + coords[:, 1]
 
         # 计算新的空间形状
-        new_d = math.ceil(d / current_down_scale[2])
-        new_h = math.ceil(h / current_down_scale[1])
-        new_w = math.ceil(w / current_down_scale[0])
+        new_d = math.ceil(d / down_scale[2])
+        new_h = math.ceil(h / down_scale[1])
+        new_w = math.ceil(w / down_scale[0])
         new_sparse_shape = [new_d, new_h, new_w]
 
         # 特征聚合
@@ -444,8 +444,7 @@ class DiffusionModelManager:
 
         self.all_down_scale = diff_model.LATENT.latent_down_scale
 
-        self.voxel_downsampler = SimpleVoxelMerging(
-            down_scale=self.all_down_scale)
+        self.voxel_downsampler = SimpleVoxelMerging()
 
         self.latent_encoder = VoxelLatentEncoder(
             input_dim=diff_model.LATENT.voxel_feature_dim,
@@ -509,7 +508,7 @@ class DiffusionModelManager:
                 voxel_features=bs_voxel_features,
                 voxel_coords=bs_voxel_coords,
                 spatial_shape=spatial_shape,
-                lionblock_idx=lionblock_idx,
+                down_scale=self.all_down_scale[lionblock_idx],
                 training=training
             )
 

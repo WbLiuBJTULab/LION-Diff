@@ -421,7 +421,7 @@ class SimpleVoxelExpanding(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, lower_voxel, unq_inv):
+    def forward(self, lower_data, unq_inv):
         """
         参数:
             lowres_latent: 降采样后的潜变量 [M, D]
@@ -431,8 +431,8 @@ class SimpleVoxelExpanding(nn.Module):
             upsampled_latent: 上采样后的潜变量 [N, D]
         """
         # 直接通过索引映射复制特征：每个高分辨率位置获取对应低分辨率特征
-        upsampled_voxel = torch.gather(lower_voxel, 0, unq_inv.unsqueeze(1).repeat(1, lower_voxel.shape[1]))
-        return upsampled_voxel
+        upsampled_data = torch.gather(lower_data, 0, unq_inv.unsqueeze(1).repeat(1, lower_data.shape[1]))
+        return upsampled_data
 
 class DiffusionModelManager:
     """
@@ -555,8 +555,10 @@ class DiffusionModelManager:
 
             # enhanced_latent = voxel_latent - predicted_noise * self.diff_noise_scale
             # enhanced_features = self.latent_decoder(enhanced_latent)
-            enhanced_voxel_down = self.latent_decoder(enhanced_latent)
-            enhanced_voxel = self.voxel_upsampler(lower_voxel = enhanced_voxel_down, unq_inv = unq_inv)  # [N, D]
+            enhanced_latent_up = self.voxel_upsampler(lower_data=enhanced_latent, unq_inv=unq_inv)  # [N, D]
+            enhanced_voxel = self.latent_decoder(enhanced_latent_up)
+            # 恢复残差链接操作
+            enhanced_voxel = enhanced_voxel + bs_voxel_features
 
             return enhanced_voxel, diffusion_loss
 
@@ -591,7 +593,10 @@ class DiffusionModelManager:
                 })
 
                 enhanced_latent, _ = self.diffusion_model_instance(diffusion_input)
-                enhanced_voxel_down = self.latent_decoder(enhanced_latent)
-                enhanced_voxel = self.voxel_upsampler(lower_voxel=enhanced_voxel_down, unq_inv=unq_inv)  # [N, D]
+
+                enhanced_latent_up = self.voxel_upsampler(lower_data=enhanced_latent, unq_inv=unq_inv)  # [N, D]
+                enhanced_voxel = self.latent_decoder(enhanced_latent_up)
+                # 恢复残差链接操作
+                enhanced_voxel = enhanced_voxel + bs_voxel_features
 
             return enhanced_voxel, 0.0

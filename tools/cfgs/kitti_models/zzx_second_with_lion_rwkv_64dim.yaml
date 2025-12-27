@@ -48,19 +48,27 @@ DATA_CONFIG:
         'test': 40000
       }
 
+    # === 新增真值框体素地图生成步骤 ===
+    - NAME: generate_gt_voxel_maps
+      VOXEL_SIZE: [ 0.2, 0.2, 0.125 ]
+      MAX_POINTS_PER_VOXEL: 5
+      MAX_NUMBER_OF_VOXELS: 16000
+
 
 MODEL:
-  NAME: SECONDNet
+  # === 更改detector ===
+  NAME: ZZXDF_SECONDNet
 
   VFE:
-    NAME: DynamicVoxelVFE
+    # === 更改VFE ===
+    NAME: ZZXDF_VFE
     WITH_DISTANCE: False
     USE_ABSLOTE_XYZ: True
     USE_NORM: True
     NUM_FILTERS: [64, 64]
 
   BACKBONE_3D:
-    NAME: LION3DBackboneOneStride
+    NAME: ZZXDF_LION
     FEATURE_DIM: 64
     LAYER_DIM: [64, 64, 64, 64]
     NUM_LAYERS: 4
@@ -70,7 +78,7 @@ MODEL:
     GROUP_SIZE: [ 4096, 2048, 1024, 512 ]
     DIRECTION: [ 'x', 'y' ]
     DIFF_SCALE: 0.2
-    DIFFUSION: True
+    DIFFUSION:  [False, True, True, True] #False #True #针对不同层手是否启用动扩散处理
     SHIFT: True
     OPERATOR:
       NAME: 'RWKV'
@@ -83,6 +91,40 @@ MODEL:
         init_mode: 'fancy'
         with_cp: True
         init_values: 0.00001
+
+    DIFF_MODEL:
+      ENABLE: True #扩散模型总控
+      LEVEL: [ True, False, False, False ] #是否各层是否启用扩散模型
+      PRIORITY: [ True, True, True, True ] #是否先于手动扩散处理
+      LATENT:
+        voxel_feature_dim: 64
+        voxel_latent_dim: 16
+        # [[2, 2, 8], [2, 2, 4], [2, 2, 2], [2, 2, 1]]
+        latent_down_scale: [ [ 2, 2, 8 ], [ 2, 2, 4 ], [ 2, 2, 2 ], [ 2, 2, 1 ] ]
+      DIFF_PROCESS:
+        diff_noise_scale: 1.0
+        diff_residual_scale: 1.0
+      DIFF_MODEL_CFG: #扩散模型内部具体配置
+        model:
+          in_channels: 16
+          out_channels: 16
+          base_channels: 8
+          dropout: 0.1
+          mlp_dims: [ 256, 128, 64 ]      #[256, 128, 64]
+          # 新增位置引导配置
+          use_pos_guide: True           # 使用位置坐标引导
+          pos_guide_strength: 0.5       # 0.5 引导强度
+          pos_embed_dim: 8              # 位置编码维度
+        diffusion:
+          beta_schedule: linear
+          linear_start: 0.004
+          linear_end: 0.02
+          num_diffusion_timesteps: 5
+      DIFF_LOSS_CFG:
+        enable: True
+        origin_weight: 0.998
+        fuse_weight: 0.002
+
 
   MAP_TO_BEV:
     NAME: HeightCompression

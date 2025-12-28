@@ -59,9 +59,11 @@ DATA_CONFIG:
 
     # === 新增真值框体素地图生成步骤 ===
     - NAME: generate_gt_voxel_maps
-      VOXEL_SIZE: [ 0.3, 0.3, 0.25 ]  # 与placeholder一致
+      VOXEL_SIZE: [ 0.3, 0.3, 0.25 ]
       MAX_POINTS_PER_VOXEL: 10
-      MAX_NUMBER_OF_VOXELS: 60000
+      MAX_NUMBER_OF_VOXELS:
+          'train': 60000
+          'test': 60000
 
 MODEL:
     # === 更改detector ===
@@ -102,7 +104,7 @@ MODEL:
           LEVEL: [ True, False, False, False ] #是否各层是否启用扩散模型
           PRIORITY: [ True, True, True, True ] #是否先于手动扩散处理
           LATENT:
-            voxel_feature_dim: 64
+            voxel_feature_dim: 128
             voxel_latent_dim: 16
             # [[2, 2, 8], [2, 2, 4], [2, 2, 2], [2, 2, 1]]
             latent_down_scale: [ [ 2, 2, 8 ], [ 2, 2, 4 ], [ 2, 2, 2 ], [ 2, 2, 1 ] ]

@@ -59,9 +59,9 @@ DATA_CONFIG:
 
     # === 新增真值框体素地图生成步骤 ===
     - NAME: generate_gt_voxel_maps
-      VOXEL_SIZE: [ 0.2, 0.2, 0.125 ]
-      MAX_POINTS_PER_VOXEL: 5
-      MAX_NUMBER_OF_VOXELS: 16000
+      VOXEL_SIZE: [ 0.3, 0.3, 0.25 ]  # 与placeholder一致
+      MAX_POINTS_PER_VOXEL: 10
+      MAX_NUMBER_OF_VOXELS: 60000
 
 MODEL:
     # === 更改detector ===

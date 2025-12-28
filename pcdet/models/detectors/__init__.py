@@ -16,6 +16,7 @@ from .CT3D_3CAT import CT3D_3CAT
 from .transfusion import TransFusion
 from .voxelnext import VoxelNeXt
 from .zzx_second_net import SECONDNet as ZZXDF_SECONDNet
+from .zzx_transfusion import TransFusion as ZZXDF_TransFusion
 
 __all__ = {
     'Detector3DTemplate': Detector3DTemplate,
@@ -35,7 +36,8 @@ __all__ = {
     'CT3D_3CAT': CT3D_3CAT,
     'TransFusion': TransFusion,
     'VoxelNeXt': VoxelNeXt,
-    'ZZXDF_SECONDNet': ZZXDF_SECONDNet
+    'ZZXDF_SECONDNet': ZZXDF_SECONDNet,
+    'ZZXDF_TransFusion': ZZXDF_TransFusion
 }
 
 

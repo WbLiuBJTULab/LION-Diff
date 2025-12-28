@@ -1,4 +1,4 @@
-# LION-Diff: Latent Diffusion-Based Voxel Enhancement \\ for Lidar-based 3D Object Detection
+# FEDM: A Enhancement Diffusion Module for Lidar-based 3D Object Detection
 
 
 [Project]() | [Paper]() 
@@ -71,4 +71,5 @@ Please refer to the python file for optimal training parameters.
 ## Acknowledgement
 
 We thank these great works: 
+
 [LION](https://github.com/happinesslz/LION) 

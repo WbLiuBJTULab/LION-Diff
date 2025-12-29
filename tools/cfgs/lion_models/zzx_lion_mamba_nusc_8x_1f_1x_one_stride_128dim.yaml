@@ -54,16 +54,20 @@ DATA_CONFIG:
           'test': True
         }
 
-    -   NAME: transform_points_to_voxels_placeholder
-        VOXEL_SIZE: [0.3, 0.3, 0.25]
-
-    # === 新增真值框体素地图生成步骤 ===
-    - NAME: generate_gt_voxel_maps
+    - NAME: transform_points_to_voxels
       VOXEL_SIZE: [ 0.3, 0.3, 0.25 ]
       MAX_POINTS_PER_VOXEL: 10
-      MAX_NUMBER_OF_VOXELS:
-          'train': 60000
-          'test': 60000
+      MAX_NUMBER_OF_VOXELS: {
+        'train': 60000,
+        'test': 60000
+      }
+
+    # 新增：真值框体素地图生成处理器
+    - NAME: generate_gt_voxel_map
+      VOXEL_SIZE: [ 0.3, 0.3, 0.25 ]  # 与transform_points_to_voxels保持一致
+      MAX_POINTS_PER_VOXEL: 10  # 与transform_points_to_voxels保持一致
+      MAX_NUMBER_OF_VOXELS: 60000
+      
 
 MODEL:
     # === 更改detector ===

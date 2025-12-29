@@ -105,7 +105,7 @@ MODEL:
           PRIORITY: [ True, True, True, True ] #是否先于手动扩散处理
           LATENT:
             voxel_feature_dim: 128
-            voxel_latent_dim: 16
+            voxel_latent_dim: 32
             # [[2, 2, 8], [2, 2, 4], [2, 2, 2], [2, 2, 1]]
             latent_down_scale: [ [ 2, 2, 8 ], [ 2, 2, 4 ], [ 2, 2, 2 ], [ 2, 2, 1 ] ]
           DIFF_PROCESS:
@@ -113,15 +113,15 @@ MODEL:
             diff_residual_scale: 1.0
           DIFF_MODEL_CFG: #扩散模型内部具体配置
             model:
-              in_channels: 16
-              out_channels: 16
-              base_channels: 8
+              in_channels: 32
+              out_channels: 32
+              base_channels: 16
               dropout: 0.1
-              mlp_dims: [ 256, 128, 64 ]      #[256, 128, 64]
+              mlp_dims: [ 512, 256, 128 ]      #[256, 128, 64]
               # 新增位置引导配置
               use_pos_guide: True           # 使用位置坐标引导
               pos_guide_strength: 0.5       # 0.5 引导强度
-              pos_embed_dim: 8              # 位置编码维度
+              pos_embed_dim: 16              # 位置编码维度
             diffusion:
               beta_schedule: linear
               linear_start: 0.004
@@ -129,8 +129,8 @@ MODEL:
               num_diffusion_timesteps: 5
           DIFF_LOSS_CFG:
             enable: True
-            origin_weight: 0.998
-            fuse_weight: 0.002
+            origin_weight: 0.9998
+            fuse_weight: 0.0002
 
 
       #DIFF_MODEL: [True, False, False, False]

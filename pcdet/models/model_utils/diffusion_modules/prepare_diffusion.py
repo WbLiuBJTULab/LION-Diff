@@ -382,10 +382,11 @@ class VoxelLatentEncoder(nn.Module):
 
     def __init__(self, input_dim=64, latent_dim=16):
         super().__init__()
+        temp_dim = max(input_dim // 2, latent_dim * 2) # 32
         self.voxel_to_latent_encoder = nn.Sequential(
-            nn.Linear(input_dim, 32),
+            nn.Linear(input_dim, temp_dim),
             nn.ReLU(),
-            nn.Linear(32, latent_dim)  # 坐标编码为16维
+            nn.Linear(temp_dim, latent_dim)  # 坐标编码为16维
         )
 
     def forward(self, features):
@@ -401,10 +402,11 @@ class VoxelLatentDecoder(nn.Module):
 
     def __init__(self, latent_dim=16, output_dim=64):
         super().__init__()
+        temp_dim = max(latent_dim * 2, output_dim // 2)  # 32
         self.latent_to_voxel_decoder = nn.Sequential(
-            nn.Linear(latent_dim, 32),
+            nn.Linear(latent_dim, temp_dim),
             nn.ReLU(),
-            nn.Linear(32, output_dim)  # 解码回64维体素特征
+            nn.Linear(temp_dim, output_dim)  # 解码回64维体素特征
         )
 
     def forward(self, latent):

@@ -82,7 +82,7 @@ DATA_PROCESSOR:
     # 新增：真值框体素地图生成处理器
     - NAME: generate_gt_voxel_map
       VOXEL_SIZE: [0.1, 0.1, 0.2]  # 与transform_points_to_voxels保持一致
-      MAX_POINTS_PER_VOXEL: 5  # 与transform_points_to_voxels保持一致
+      MAX_POINTS_PER_VOXEL: 10  # 与transform_points_to_voxels保持一致
       MAX_NUMBER_OF_VOXELS: {
         'train': 60000,
         'test': 60000

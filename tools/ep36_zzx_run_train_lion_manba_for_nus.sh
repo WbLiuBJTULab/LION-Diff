@@ -5,7 +5,7 @@
 CUDA_VISIBLE_DEVICES=0 python -m torch.distributed.launch \
 --nproc_per_node=1 --master_port=29988 train.py  --tcp_port 29988  --launcher pytorch  \
 --cfg_file ./cfgs/lion_models/zzx_lion_mamba_nusc_8x_1f_1x_one_stride_128dim.yaml \
---extra_tag ep80_zzx_lion_mamba_nusc_8x_1f_1x_one_stride_128dim \
+--extra_tag ep36_zzx_lion_mamba_nusc_8x_1f_1x_one_stride_128dim \
 --batch_size 2  --epochs 4 --max_ckpt_save_num 4 --workers 4 --sync_bn
 
 

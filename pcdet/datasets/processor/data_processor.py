@@ -153,8 +153,6 @@ class DataProcessor(object):
         data_dict['voxel_coords'] = coordinates
         data_dict['voxel_num_points'] = num_points
 
-
-
         return data_dict
 
     # 20250905 _代码修改 直接在data_processor中加入真值框地图的功能
